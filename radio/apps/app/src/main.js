@@ -21,16 +21,25 @@ let audioElement = null;
 let isPlaying = false;
 let currentUrl = '';
 let currentVolume = DEFAULT_VOLUME;
+let isScannerActive = false;
 
 // ===========================================
 // DOM Elements
 // ===========================================
 
-let urlInput;
 let playStopBtn;
+let scanQrBtn;
 let statusDisplay;
 let trackInfoDisplay;
 let volumeDisplay;
+let scannerModal;
+let scannerVideo;
+let scannerStatus;
+let closeScannerBtn;
+
+let scannerStream = null;
+let scannerFrameRequest = null;
+let qrDetector = null;
 
 // ===========================================
 // Audio Player Functions
@@ -195,8 +204,148 @@ function changeVolume(delta) {
 
   if (previousVolume !== currentVolume) {
     console.log(`Volume changed: ${Math.round(currentVolume * 100)}%`);
-    const urlToSave = currentUrl || urlInput?.value?.trim() || DEFAULT_STREAM_URL;
+    const urlToSave = currentUrl || DEFAULT_STREAM_URL;
     saveSettings(urlToSave, currentVolume);
+  }
+}
+
+function isValidStationUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function setScannerButtonState(scanning) {
+  if (!scanQrBtn) return;
+
+  scanQrBtn.disabled = scanning;
+  scanQrBtn.textContent = scanning ? 'Scanning...' : 'Scan Station QR';
+}
+
+function cleanupScannerResources() {
+  if (scannerFrameRequest) {
+    cancelAnimationFrame(scannerFrameRequest);
+    scannerFrameRequest = null;
+  }
+
+  if (scannerStream) {
+    scannerStream.getTracks().forEach((track) => track.stop());
+    scannerStream = null;
+  }
+
+  if (scannerVideo) {
+    scannerVideo.pause();
+    scannerVideo.srcObject = null;
+  }
+}
+
+function stopQrScanner() {
+  isScannerActive = false;
+  cleanupScannerResources();
+  if (scannerModal) {
+    scannerModal.classList.add('hidden');
+  }
+  if (scannerStatus) {
+    scannerStatus.textContent = 'Point camera at station QR';
+  }
+  setScannerButtonState(false);
+}
+
+async function processDetectedQrValue(rawValue) {
+  const value = rawValue?.trim();
+  if (!value) return false;
+
+  if (!isValidStationUrl(value)) {
+    if (scannerStatus) {
+      scannerStatus.textContent = 'QR is not a valid URL';
+    }
+    return false;
+  }
+
+  currentUrl = value;
+  saveSettings(currentUrl, currentVolume);
+  trackInfoDisplay.textContent = currentUrl;
+
+  if (isPlaying) {
+    await playStream(currentUrl);
+  } else {
+    updateUI();
+  }
+
+  stopQrScanner();
+  return true;
+}
+
+async function scanQrFrame() {
+  if (!isScannerActive || !qrDetector || !scannerVideo) return;
+
+  try {
+    const barcodes = await qrDetector.detect(scannerVideo);
+    if (barcodes.length > 0) {
+      const handled = await processDetectedQrValue(barcodes[0].rawValue);
+      if (handled) return;
+    }
+  } catch (error) {
+    // Detection can fail on intermediate frames while camera is warming up.
+    console.debug('QR scan frame skipped:', error);
+  }
+
+  if (isScannerActive) {
+    scannerFrameRequest = requestAnimationFrame(scanQrFrame);
+  }
+}
+
+async function startQrScanner() {
+  if (isScannerActive) return;
+
+  if (!window.isSecureContext && location.hostname !== 'localhost') {
+    trackInfoDisplay.textContent = 'Camera requires HTTPS';
+    return;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    trackInfoDisplay.textContent = 'Camera API not available';
+    return;
+  }
+
+  if (typeof BarcodeDetector === 'undefined') {
+    trackInfoDisplay.textContent = 'QR scan not supported on this WebView';
+    return;
+  }
+
+  try {
+    qrDetector = new BarcodeDetector({ formats: ['qr_code'] });
+  } catch (error) {
+    console.error('BarcodeDetector init failed:', error);
+    trackInfoDisplay.textContent = 'QR scanner unavailable';
+    return;
+  }
+
+  try {
+    scannerStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: 'environment' }
+      },
+      audio: false
+    });
+
+    scannerVideo.srcObject = scannerStream;
+    await scannerVideo.play();
+
+    isScannerActive = true;
+    scannerModal.classList.remove('hidden');
+    scannerStatus.textContent = 'Point camera at station QR';
+    setScannerButtonState(true);
+
+    scannerFrameRequest = requestAnimationFrame(scanQrFrame);
+  } catch (error) {
+    console.error('Unable to start camera:', error);
+    cleanupScannerResources();
+    setScannerButtonState(false);
+    trackInfoDisplay.textContent = 'Camera permission denied or unavailable';
   }
 }
 
@@ -232,8 +381,6 @@ function updateUI() {
 // ===========================================
 
 function handlePlayStopClick() {
-  const url = urlInput.value.trim();
-  
   if (isPlaying) {
     // Stop playback
     stopStream();
@@ -241,13 +388,13 @@ function handlePlayStopClick() {
     if (currentUrl && audioElement && audioElement.src) {
       // Resume existing stream
       resumeStream();
-    } else if (url) {
+    } else if (currentUrl) {
       // Start new stream
-      playStream(url);
+      playStream(currentUrl);
     } else {
-      // No URL entered
+      // No station selected
       statusDisplay.textContent = 'Error';
-      trackInfoDisplay.textContent = 'Please enter a stream URL';
+      trackInfoDisplay.textContent = 'Scan a station QR first';
     }
   }
 }
@@ -326,11 +473,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('Web Radio Player initialized!');
   
   // Get DOM elements
-  urlInput = document.getElementById('urlInput');
   playStopBtn = document.getElementById('playStopBtn');
+  scanQrBtn = document.getElementById('scanQrBtn');
   statusDisplay = document.getElementById('status');
   trackInfoDisplay = document.getElementById('trackInfo');
   volumeDisplay = document.getElementById('volume');
+  scannerModal = document.getElementById('scannerModal');
+  scannerVideo = document.getElementById('scannerVideo');
+  scannerStatus = document.getElementById('scannerStatus');
+  closeScannerBtn = document.getElementById('closeScannerBtn');
   
   // Load last used settings
   const { lastUrl, volume } = await loadSettings();
@@ -338,23 +489,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Load last used URL or set default
   if (lastUrl) {
-    urlInput.value = lastUrl;
     currentUrl = lastUrl;
   } else {
-    // Set default stream URL
-    urlInput.value = DEFAULT_STREAM_URL;
     currentUrl = DEFAULT_STREAM_URL;
     await saveSettings(DEFAULT_STREAM_URL, currentVolume);
+  }
+
+  if (currentUrl) {
+    trackInfoDisplay.textContent = currentUrl;
   }
   
   // Button click handler
   playStopBtn.addEventListener('click', handlePlayStopClick);
-  
-  // Save URL when it changes
-  urlInput.addEventListener('change', () => {
-    const url = urlInput.value.trim();
-    if (url) {
-      saveSettings(url, currentVolume);
+
+  scanQrBtn.addEventListener('click', startQrScanner);
+  closeScannerBtn.addEventListener('click', stopQrScanner);
+  scannerModal.addEventListener('click', (event) => {
+    if (event.target === scannerModal) {
+      stopQrScanner();
     }
   });
   
@@ -391,6 +543,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 // Cleanup on page unload
 window.addEventListener('beforeunload', () => {
+  stopQrScanner();
   if (audioElement) {
     audioElement.pause();
     audioElement.src = '';

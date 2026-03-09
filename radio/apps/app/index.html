@@ -10,10 +10,7 @@
     <div id="app">
         <h1>Web Radio</h1>
         <div class="radio-container">
-            <div class="input-group">
-                <label for="urlInput">Stream URL</label>
-                <input type="text" id="urlInput" placeholder="Enter radio stream URL" />
-            </div>
+            <button id="scanQrBtn" class="control-btn scan-btn">Scan Station QR</button>
             
             <button id="playStopBtn" class="control-btn">Play</button>
             
@@ -21,6 +18,14 @@
                 <div class="status" id="status">Stopped</div>
                 <div class="volume" id="volume">Volume: 70%</div>
                 <div class="track-info" id="trackInfo"></div>
+            </div>
+        </div>
+
+        <div id="scannerModal" class="scanner-modal hidden">
+            <div class="scanner-content">
+                <video id="scannerVideo" class="scanner-video" autoplay playsinline muted></video>
+                <div id="scannerStatus" class="scanner-status">Point camera at station QR</div>
+                <button id="closeScannerBtn" class="control-btn scanner-close-btn">Cancel</button>
             </div>
         </div>
     </div>
