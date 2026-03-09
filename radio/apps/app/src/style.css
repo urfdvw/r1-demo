@@ -125,6 +125,13 @@ h1 {
     text-align: center;
 }
 
+.volume {
+    font-size: 3vw;
+    color: #bdbdbd;
+    text-align: center;
+    letter-spacing: 0.5px;
+}
+
 .track-info {
     font-size: 3.5vw;
     color: #ccc;

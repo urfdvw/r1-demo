@@ -14,10 +14,13 @@ if (typeof PluginMessageHandler !== 'undefined') {
 
 const DEFAULT_STREAM_URL = 'https://radio.gotanno.love/;?type=http&nocache=2997';
 const DEFAULT_MIME_TYPE = 'audio/mpeg';
+const DEFAULT_VOLUME = 0.7;
+const VOLUME_STEP = 0.05;
 
 let audioElement = null;
 let isPlaying = false;
 let currentUrl = '';
+let currentVolume = DEFAULT_VOLUME;
 
 // ===========================================
 // DOM Elements
@@ -27,6 +30,7 @@ let urlInput;
 let playStopBtn;
 let statusDisplay;
 let trackInfoDisplay;
+let volumeDisplay;
 
 // ===========================================
 // Audio Player Functions
@@ -37,6 +41,7 @@ function initAudioElement() {
     audioElement = new Audio();
     audioElement.preload = 'none';
     audioElement.crossOrigin = 'anonymous';
+    audioElement.volume = currentVolume;
     
     // Handle audio events
     audioElement.addEventListener('play', handleAudioPlay);
@@ -109,6 +114,7 @@ async function playStream(url) {
   
   try {
     currentUrl = url;
+    saveSettings(currentUrl, currentVolume);
     
     // Set the source with proper MIME type handling
     audioElement.src = url;
@@ -163,6 +169,37 @@ function resumeStream() {
   }
 }
 
+function clampVolume(volume) {
+  return Math.min(1, Math.max(0, volume));
+}
+
+function updateVolumeDisplay() {
+  if (volumeDisplay) {
+    volumeDisplay.textContent = `Volume: ${Math.round(currentVolume * 100)}%`;
+  }
+}
+
+function setVolume(volume) {
+  currentVolume = clampVolume(volume);
+
+  if (audioElement) {
+    audioElement.volume = currentVolume;
+  }
+
+  updateVolumeDisplay();
+}
+
+function changeVolume(delta) {
+  const previousVolume = currentVolume;
+  setVolume(currentVolume + delta);
+
+  if (previousVolume !== currentVolume) {
+    console.log(`Volume changed: ${Math.round(currentVolume * 100)}%`);
+    const urlToSave = currentUrl || urlInput?.value?.trim() || DEFAULT_STREAM_URL;
+    saveSettings(urlToSave, currentVolume);
+  }
+}
+
 // ===========================================
 // UI Update Functions
 // ===========================================
@@ -186,6 +223,8 @@ function updateUI() {
     playStopBtn.classList.add('stopped');
     statusDisplay.textContent = 'Stopped';
   }
+
+  updateVolumeDisplay();
 }
 
 // ===========================================
@@ -217,38 +256,47 @@ function handlePlayStopClick() {
 // Persistent Storage
 // ===========================================
 
-async function saveLastUrl(url) {
+async function saveSettings(url = currentUrl, volume = currentVolume) {
+  const payload = {
+    lastUrl: url,
+    volume: clampVolume(volume)
+  };
+
   if (window.creationStorage) {
     try {
-      const encoded = btoa(JSON.stringify({ lastUrl: url }));
+      const encoded = btoa(JSON.stringify(payload));
       await window.creationStorage.plain.setItem('radio_data', encoded);
     } catch (e) {
-      console.error('Error saving URL:', e);
+      console.error('Error saving settings:', e);
     }
   } else {
-    localStorage.setItem('radio_data', JSON.stringify({ lastUrl: url }));
+    localStorage.setItem('radio_data', JSON.stringify(payload));
   }
 }
 
-async function loadLastUrl() {
+async function loadSettings() {
+  let settings = null;
+
   if (window.creationStorage) {
     try {
       const stored = await window.creationStorage.plain.getItem('radio_data');
       if (stored) {
-        const data = JSON.parse(atob(stored));
-        return data.lastUrl;
+        settings = JSON.parse(atob(stored));
       }
     } catch (e) {
-      console.error('Error loading URL:', e);
+      console.error('Error loading settings:', e);
     }
   } else {
     const stored = localStorage.getItem('radio_data');
     if (stored) {
-      const data = JSON.parse(stored);
-      return data.lastUrl;
+      settings = JSON.parse(stored);
     }
   }
-  return null;
+
+  return {
+    lastUrl: typeof settings?.lastUrl === 'string' ? settings.lastUrl : null,
+    volume: typeof settings?.volume === 'number' ? clampVolume(settings.volume) : DEFAULT_VOLUME
+  };
 }
 
 // ===========================================
@@ -262,10 +310,12 @@ window.addEventListener('sideClick', () => {
 
 window.addEventListener('scrollUp', () => {
   console.log('Scroll up detected');
+  changeVolume(VOLUME_STEP);
 });
 
 window.addEventListener('scrollDown', () => {
   console.log('Scroll down detected');
+  changeVolume(-VOLUME_STEP);
 });
 
 // ===========================================
@@ -280,9 +330,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   playStopBtn = document.getElementById('playStopBtn');
   statusDisplay = document.getElementById('status');
   trackInfoDisplay = document.getElementById('trackInfo');
+  volumeDisplay = document.getElementById('volume');
   
+  // Load last used settings
+  const { lastUrl, volume } = await loadSettings();
+  setVolume(volume);
+
   // Load last used URL or set default
-  const lastUrl = await loadLastUrl();
   if (lastUrl) {
     urlInput.value = lastUrl;
     currentUrl = lastUrl;
@@ -290,7 +344,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Set default stream URL
     urlInput.value = DEFAULT_STREAM_URL;
     currentUrl = DEFAULT_STREAM_URL;
-    await saveLastUrl(DEFAULT_STREAM_URL);
+    await saveSettings(DEFAULT_STREAM_URL, currentVolume);
   }
   
   // Button click handler
@@ -300,18 +354,33 @@ document.addEventListener('DOMContentLoaded', async () => {
   urlInput.addEventListener('change', () => {
     const url = urlInput.value.trim();
     if (url) {
-      saveLastUrl(url);
+      saveSettings(url, currentVolume);
     }
   });
   
-  // Keyboard fallback for development (Space = side button)
+  // Keyboard + wheel fallback for development
   if (typeof PluginMessageHandler === 'undefined') {
     window.addEventListener('keydown', (event) => {
       if (event.code === 'Space') {
         event.preventDefault();
         window.dispatchEvent(new CustomEvent('sideClick'));
       }
+
+      if (event.code === 'ArrowUp') {
+        event.preventDefault();
+        changeVolume(VOLUME_STEP);
+      }
+
+      if (event.code === 'ArrowDown') {
+        event.preventDefault();
+        changeVolume(-VOLUME_STEP);
+      }
     });
+
+    window.addEventListener('wheel', (event) => {
+      event.preventDefault();
+      changeVolume(event.deltaY < 0 ? VOLUME_STEP : -VOLUME_STEP);
+    }, { passive: false });
   }
   
   // Initialize UI
